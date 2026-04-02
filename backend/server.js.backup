@@ -1,0 +1,995 @@
+// 加载环境变量
+require('dotenv').config();
+
+const express = require('express');
+const multer = require('multer');
+const cors = require('cors');
+const path = require('path');
+const fs = require('fs');
+const { PDFParse } = require('pdf-parse');
+const { extractTextWithOCR } = require('./ocr-extract');
+
+const app = express();
+const PORT = 3000;
+
+// 中间件
+app.use(cors());
+app.use(express.json());
+app.use('/pdf', express.static(path.join(__dirname, 'pdf_files')));
+
+// 数据库文件路径
+const DB_PATH = path.join(__dirname, 'pdf_database.json');
+
+// 确保存储目录存在
+const storageDir = path.join(__dirname, 'pdf_files');
+if (!fs.existsSync(storageDir)) {
+  fs.mkdirSync(storageDir, { recursive: true });
+}
+
+// 初始化数据库
+function initDatabase() {
+  if (!fs.existsSync(DB_PATH)) {
+    const initialData = {
+      uploadTime: new Date().toISOString(),
+      files: []
+    };
+    fs.writeFileSync(DB_PATH, JSON.stringify(initialData, null, 2));
+  }
+}
+
+initDatabase();
+
+// 过滤 PDF 内容中的无意义字符
+function filterContent(content) {
+  if (!content) return content;
+  
+  let filtered = content;
+  
+  // 1. 移除连续的单字母序列 (如 "F G H I J K L M N O P Q R S T U V A B C D E")
+  // 匹配模式：单个大写字母 + 空格，重复 5 次以上
+  const singleLetterPattern = /(?:[A-Z]\s+){5,}[A-Z]/g;
+  filtered = filtered.replace(singleLetterPattern, '');
+  
+  // 2. 移除连续的单个小写字母序列
+  const singleLowerPattern = /(?:[a-z]\s+){5,}[a-z]/g;
+  filtered = filtered.replace(singleLowerPattern, '');
+  
+  // 3. 移除页码标记 (如 "-- 1 of 56 --" 或 "--1 of 56--")
+  const pageNumPattern = /--\s*\d+\s+of\s+\d+\s*--/g;
+  filtered = filtered.replace(pageNumPattern, '');
+  
+  // 4. 移除连续的下划线行
+  const underlinePattern = /_{10,}/g;
+  filtered = filtered.replace(underlinePattern, '');
+  
+  // 5. 移除只有空格的行
+  const emptyLines = /^\s+$/gm;
+  filtered = filtered.replace(emptyLines, '');
+  
+  // 6. 清理多余的空行（超过 2 个连续换行）
+  filtered = filtered.replace(/\n{3,}/g, '\n\n');
+  
+  // 7. 移除行首尾的多余空格
+  filtered = filtered.split('\n').map(line => line.trim()).join('\n');
+  
+  return filtered.trim();
+}
+
+// 读取数据库
+function readDB() {
+  try {
+    const data = fs.readFileSync(DB_PATH, 'utf-8');
+    return JSON.parse(data);
+  } catch (error) {
+    console.error('读取数据库失败:', error.message);
+    return { files: [] };
+  }
+}
+
+// 写入数据库
+function writeDB(data) {
+  try {
+    fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+  } catch (error) {
+    console.error('写入数据库失败:', error.message);
+    throw new Error('保存数据失败');
+  }
+}
+
+// Multer 配置
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, storageDir);
+  },
+  filename: function (req, file, cb) {
+    // 使用唯一文件名避免冲突
+    const uniqueName = `${Date.now()}-${Math.round(Math.random() * 1E9)}${path.extname(file.originalname)}`;
+    cb(null, uniqueName);
+  }
+});
+
+const upload = multer({
+  storage: storage,
+  // 无文件大小限制 - 由服务器内存和磁盘空间决定
+  fileFilter: function (req, file, cb) {
+    // 检查文件类型
+    const allowedTypes = [
+      'application/pdf',
+      'application/x-pdf',
+      'application/acrobat',
+      'applications/vnd.pdf',
+      'text/pdf',
+      'text/x-pdf'
+    ];
+    
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('仅允许上传 PDF 文件'), false);
+    }
+  }
+});
+
+// 批量上传中间件 - 支持 pdfFiles (复数) 或 pdfFile (单数)
+const uploadMultiple = upload.fields([
+  { name: 'pdfFiles', maxCount: 50 },
+  { name: 'pdfFile', maxCount: 50 }
+]);
+
+// 简单的 Hello API
+app.get('/api/hello', (req, res) => {
+  res.json({ 
+    message: 'ClawText PDF Upload Server',
+    version: '1.0.0',
+    features: ['PDF 上传', '文件列表']
+  });
+});
+
+// 上传 PDF（支持单个或批量）
+app.post('/api/upload-pdf', (req, res) => {
+  uploadMultiple(req, res, (err) => {
+    if (err) {
+      console.error('Multer error:', err);
+      return res.status(500).json({
+        success: false,
+        error: err.message || '上传失败'
+      });
+    }
+    
+    try {
+      // 兼容两种字段名：pdfFiles 或 pdfFile
+      const files = req.files?.pdfFiles || req.files?.pdfFile || (req.file ? [req.file] : []);
+      
+      if (files.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: '没有收到上传的文件'
+        });
+      }
+      
+      // 获取分类参数 - 只允许 MMT 或 SFAT
+      let category = req.body.category || 'MMT';
+      if (category !== 'MMT' && category !== 'SFAT') {
+        category = 'MMT'; // 默认值
+      }
+      
+      const uploadedFiles = [];
+      
+      // 读取数据库
+      const db = readDB();
+      
+      // 处理所有文件 - 支持同名文件覆盖
+      // 先保存基本信息，内容提取异步进行
+      for (const file of files) {
+        // 检查是否已有同名文件，如果有则先删除（覆盖模式）
+        const existingFile = db.files.find(f => f.originalName === file.originalname);
+        if (existingFile) {
+          console.log(`🔄 检测到同名文件，将覆盖：${file.originalname}`);
+          
+          // 删除旧文件记录
+          db.files = db.files.filter(f => f.id !== existingFile.id);
+          
+          // 删除旧物理文件
+          const oldFilePath = path.join(__dirname, 'pdf_files', existingFile.fileName);
+          if (fs.existsSync(oldFilePath)) {
+            try {
+              fs.unlinkSync(oldFilePath);
+              console.log(`   🗑️ 已删除旧文件：${existingFile.fileName}`);
+            } catch (err) {
+              console.error(`   ⚠️ 删除旧文件失败：${err.message}`);
+            }
+          }
+        }
+        
+        const fileInfo = {
+          id: Date.now().toString() + '-' + Math.random().toString(36).substr(2, 9),
+          originalName: file.originalname,
+          fileName: file.filename,
+          filePath: path.join('/', 'pdf', file.filename),
+          mimeType: file.mimetype,
+          size: file.size,
+          category: category,
+          uploadTime: new Date().toISOString(),
+          uploadTimestamp: Date.now(),
+          content: '' // 稍后填充
+        };
+        
+        // 异步提取 PDF 内容并生成智能分块
+        const fullPath = path.join(__dirname, 'pdf_files', file.filename);
+        (async () => {
+          try {
+            const buffer = fs.readFileSync(fullPath);
+            const parser = new PDFParse({ data: buffer });
+            const data = await parser.getText();
+            let rawContent = filterContent(data.text.substring(0, 50000));
+            fileInfo.pageCount = data.numpages;
+            fileInfo.docId = fileInfo.id; // docId 与 fileId 一致，用于文档级检索
+            
+            // 检测是否为扫描版 PDF（文本提取过少且文件较大）
+            const isScannedPDF = rawContent.length < 100 && file.size > 500000;
+            
+            if (isScannedPDF) {
+              console.log(`   ⚠️ 检测到扫描版 PDF（仅提取 ${rawContent.length} 字符），尝试 OCR 处理...`);
+              const ocrText = await extractTextWithOCR(fullPath, file.originalname);
+              if (ocrText.length > 0) {
+                rawContent = ocrText;
+                console.log(`   ✅ OCR 成功，使用 OCR 提取的 ${rawContent.length} 字符`);
+              }
+            }
+            
+            fileInfo.content = rawContent;
+            
+            // 生成智能分块并存储
+            const chunks = smartChunk(rawContent, fileInfo.docId, fileInfo.originalName);
+            fileInfo.chunks = chunks.map(c => ({
+              id: c.id,
+              structureMarker: c.structureMarker,
+              chunkIndex: c.chunkIndex,
+              contentPreview: c.content.substring(0, 100)
+            }));
+            fileInfo.chunkCount = chunks.length;
+            
+            console.log(`   📄 提取内容：${data.numpages} 页，${rawContent.length} 字符，${chunks.length} 个分块`);
+            
+            // 更新数据库中的内容
+            const db = readDB();
+            const idx = db.files.findIndex(f => f.id === fileInfo.id);
+            if (idx !== -1) {
+              db.files[idx] = fileInfo;
+              writeDB(db);
+            }
+          } catch (err) {
+            console.error(`   ⚠️ 内容提取失败：${err.message}`);
+          }
+        })();
+        
+        db.files.unshift(fileInfo);
+        
+        console.log(`✅ PDF 文件已上传：${fileInfo.originalName}`);
+        console.log(`   类型：${fileInfo.category}`);
+        console.log(`   路径：${fileInfo.filePath}`);
+        console.log(`   大小：${(fileInfo.size / 1024).toFixed(2)} KB`);
+        
+        uploadedFiles.push({
+          success: true,
+          fileId: fileInfo.id,
+          originalName: fileInfo.originalName,
+          category: fileInfo.category,
+          size: fileInfo.size,
+          overwritten: existingFile ? true : false,
+          uploadTime: fileInfo.uploadTime,
+          filePath: fileInfo.filePath
+        });
+      }
+      
+      db.uploadTime = new Date().toISOString();
+      
+      // 写入数据库
+      writeDB(db);
+      
+      res.json({
+        success: true,
+        total: uploadedFiles.length,
+        files: uploadedFiles,
+        category: category,
+        message: `成功上传 ${uploadedFiles.length} 个 PDF 文件！`
+      });
+      
+    } catch (error) {
+      console.error('上传错误:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message || '服务器内部错误'
+      });
+    }
+  });
+});
+
+// 获取 PDF 列表
+app.get('/api/pdf-files', (req, res) => {
+  try {
+    const db = readDB();
+    if (!db || !db.files) {
+      return res.json({
+        success: true,
+        total: 0,
+        files: []
+      });
+    }
+    res.json({
+      success: true,
+      total: db.files.length,
+      files: db.files
+    });
+  } catch (error) {
+    console.error('获取文件列表失败:', error);
+    res.status(500).json({
+      success: false,
+      error: '获取文件列表失败'
+    });
+  }
+});
+
+// 获取文档列表（精简版，用于文档选择器）
+app.get('/api/documents', (req, res) => {
+  try {
+    const { category } = req.query;
+    const db = readDB();
+    if (!db || !db.files) {
+      return res.json({
+        success: true,
+        total: 0,
+        documents: []
+      });
+    }
+    
+    let files = db.files.filter(f => f.status !== 'deleted' && f.content && f.content.length > 0);
+    
+    if (category) {
+      files = files.filter(f => f.category === category);
+    }
+    
+    const documents = files.map(f => ({
+      id: f.id,
+      docId: f.docId || f.id,
+      name: f.originalName,
+      category: f.category,
+      pageCount: f.pageCount,
+      chunkCount: f.chunkCount || 0,
+      uploadTime: f.uploadTime
+    }));
+    
+    res.json({
+      success: true,
+      total: documents.length,
+      documents
+    });
+  } catch (error) {
+    console.error('获取文档列表失败:', error);
+    res.status(500).json({
+      success: false,
+      error: '获取文档列表失败'
+    });
+  }
+});
+
+// 删除 PDF 文件
+app.delete('/api/pdf-files/:id', (req, res) => {
+  try {
+    const { id } = req.params;
+    let db = readDB();
+    
+    // 找到文件
+    const fileIndex = db.files.findIndex(f => f.id === id);
+    if (fileIndex === -1) {
+      return res.status(404).json({
+        success: false,
+        error: '文件不存在'
+      });
+    }
+    
+    const file = db.files[fileIndex];
+    
+    // 检查文件是否存在于文件系统
+    const fullPath = path.join(__dirname, 'pdf_files', file.fileName);
+    if (fs.existsSync(fullPath)) {
+      fs.unlinkSync(fullPath);
+      console.log(`🗑️ 文件已删除：${fullPath}`);
+    }
+    
+    // 从数据库中移除（标记为 deleted）
+    db.files[fileIndex].status = 'deleted';
+    db.uploadTime = new Date().toISOString();
+    
+    writeDB(db);
+    
+    res.json({
+      success: true,
+      message: '文件已成功删除',
+      fileId: id
+    });
+    
+  } catch (error) {
+    console.error('删除文件失败:', error);
+    res.status(500).json({
+      success: false,
+      error: '删除文件失败'
+    });
+  }
+});
+
+// 重新提取所有 PDF 内容 API（带智能分块）
+app.post('/api/extract-all-content', async (req, res) => {
+  try {
+    const db = readDB();
+    if (!db || !db.files) {
+      return res.json({
+        success: true,
+        message: '没有 PDF 文件需要提取',
+        processed: 0
+      });
+    }
+    
+    let processed = 0;
+    let success = 0;
+    let failed = 0;
+    let totalChunks = 0;
+    
+    for (const file of db.files) {
+      if (file.status === 'deleted' || !file.filePath) continue;
+      
+      // 构建正确的文件路径
+      const fileName = file.fileName || path.basename(file.filePath);
+      const fullPath = path.join(__dirname, 'pdf_files', fileName);
+      
+      if (!fs.existsSync(fullPath)) {
+        console.log(`⚠️ 文件不存在：${fullPath}`);
+        failed++;
+        continue;
+      }
+      
+      try {
+        const buffer = fs.readFileSync(fullPath);
+        const parser = new PDFParse({ data: buffer });
+        const data = await parser.getText();
+        const rawContent = filterContent(data.text.substring(0, 50000));
+        file.content = rawContent;
+        file.pageCount = data.numpages;
+        file.contentExtractedAt = new Date().toISOString();
+        file.docId = file.id;
+        
+        // 生成智能分块
+        const chunks = smartChunk(rawContent, file.docId, file.originalName);
+        file.chunks = chunks.map(c => ({
+          id: c.id,
+          structureMarker: c.structureMarker,
+          chunkIndex: c.chunkIndex,
+          contentPreview: c.content.substring(0, 100)
+        }));
+        file.chunkCount = chunks.length;
+        totalChunks += chunks.length;
+        
+        console.log(`✅ 提取内容：${file.originalName} - ${data.numpages} 页，${chunks.length} 个分块`);
+        success++;
+      } catch (err) {
+        console.error(`❌ 提取失败：${file.originalName} - ${err.message}`);
+        failed++;
+      }
+      
+      processed++;
+    }
+    
+    writeDB(db);
+    
+    res.json({
+      success: true,
+      message: `内容提取完成，共生成 ${totalChunks} 个智能分块`,
+      processed,
+      success,
+      failed,
+      totalChunks
+    });
+  } catch (error) {
+    console.error('批量提取错误:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ==================== 智能检索增强模块 ====================
+
+// 法律文本核心术语权重表（根据领域重要性）
+const LEGAL_TERM_WEIGHTS = {
+  // 法院相关（最高权重）
+  'court': 3.0, 'courts': 3.0, 'judge': 3.0, 'judges': 3.0, 'judicial': 2.5,
+  'court comments': 4.0, 'court opinion': 4.0, 'court held': 4.0, 'court found': 4.0,
+  
+  // 程序/路径相关（高权重）
+  'route': 3.5, 'path': 2.5, 'procedure': 3.0, 'process': 2.0, 'approach': 2.5,
+  'manner': 2.0, 'way': 1.5, 'step': 2.0, 'stage': 2.0,
+  
+  // 纪律处分相关（最高权重）
+  'disciplinary': 4.0, 'discipline': 3.5, 'sanction': 3.5, 'penalty': 3.0,
+  'disciplinary powers': 4.5, 'disciplinary action': 4.0, 'disciplinary proceeding': 4.0,
+  
+  // 法律标准相关（高权重）
+  'fit and proper': 4.0, 'due process': 3.5, 'natural justice': 3.5,
+  'procedural fairness': 3.5, 'legitimate expectation': 3.5,
+  
+  // 文档引用相关（中权重）
+  'section': 2.0, '§': 2.5, 'paragraph': 2.0, 'clause': 2.0, 'article': 2.0,
+  'sfat': 2.5, 'sfat 2021': 3.0, 'sfat 2022': 3.0,
+  
+  // 一般法律术语（标准权重）
+  'appeal': 2.5, 'review': 2.0, 'decision': 2.0, 'ruling': 2.5, 'order': 1.5,
+  'application': 1.5, 'respondent': 2.0, 'appellant': 2.0, 'party': 1.5
+};
+
+// 分块配置
+const CHUNK_CONFIG = {
+  minChunkSize: 200,      // 最小分块大小（字符）
+  maxChunkSize: 800,      // 最大分块大小（字符）
+  overlapSize: 100,       // 分块重叠大小（字符）
+  preserveStructure: true // 保留法律文本结构
+};
+
+// 智能分块函数 - 保留法律文本结构
+function smartChunk(content, docId, docName) {
+  const chunks = [];
+  
+  // 1. 首先按法律文本结构分割（§、Section、Article 等）
+  const structurePattern = /(?:§\s*\d+|Section\s+\d+|Article\s+\d+|Paragraph\s+\d+|\(\d+\)\s*[A-Z])/gi;
+  
+  let lastIndex = 0;
+  const matches = [];
+  let match;
+  const regex = new RegExp(structurePattern, 'gi');
+  
+  while ((match = regex.exec(content)) !== null) {
+    matches.push({
+      index: match.index,
+      text: match[0]
+    });
+  }
+  
+  if (matches.length > 0) {
+    // 按结构标记分块
+    for (let i = 0; i < matches.length; i++) {
+      const start = matches[i].index;
+      const end = (i < matches.length - 1) ? matches[i + 1].index : content.length;
+      const chunkText = content.substring(start, end).trim();
+      
+      if (chunkText.length >= CHUNK_CONFIG.minChunkSize) {
+        chunks.push({
+          id: `${docId}-chunk-${i}`,
+          docId: docId,
+          docName: docName,
+          content: chunkText,
+          structureMarker: matches[i].text,
+          chunkIndex: i,
+          totalChunks: matches.length
+        });
+      }
+    }
+  } else {
+    // 2. 如果没有结构标记，按段落分块
+    const paragraphs = content.split(/\n\s*\n/).filter(p => p.trim().length > 0);
+    let currentChunk = '';
+    let chunkIndex = 0;
+    
+    for (const para of paragraphs) {
+      if (currentChunk.length + para.length > CHUNK_CONFIG.maxChunkSize) {
+        if (currentChunk.length >= CHUNK_CONFIG.minChunkSize) {
+          chunks.push({
+            id: `${docId}-chunk-${chunkIndex}`,
+            docId: docId,
+            docName: docName,
+            content: currentChunk.trim(),
+            structureMarker: null,
+            chunkIndex: chunkIndex
+          });
+          chunkIndex++;
+        }
+        // 保留重叠部分
+        currentChunk = currentChunk.substring(currentChunk.length - CHUNK_CONFIG.overlapSize) + '\n\n' + para;
+      } else {
+        currentChunk += '\n\n' + para;
+      }
+    }
+    
+    if (currentChunk.trim().length >= CHUNK_CONFIG.minChunkSize) {
+      chunks.push({
+        id: `${docId}-chunk-${chunkIndex}`,
+        docId: docId,
+        docName: docName,
+        content: currentChunk.trim(),
+        structureMarker: null,
+        chunkIndex: chunkIndex
+      });
+    }
+  }
+  
+  return chunks;
+}
+
+// 计算术语权重
+function calculateTermWeight(term, isMultiWord = false) {
+  const lowerTerm = term.toLowerCase();
+  
+  // 检查多词短语
+  if (LEGAL_TERM_WEIGHTS[lowerTerm]) {
+    return LEGAL_TERM_WEIGHTS[lowerTerm];
+  }
+  
+  // 检查单词形式
+  if (!isMultiWord && LEGAL_TERM_WEIGHTS[lowerTerm]) {
+    return LEGAL_TERM_WEIGHTS[lowerTerm];
+  }
+  
+  // 默认权重
+  return 1.0;
+}
+
+// 功能词列表（疑问词、助动词、介词、代词等 - 这些不是核心限定条件）
+const FUNCTION_WORDS = new Set([
+  // 疑问词/疑问结构
+  'is', 'are', 'was', 'were', 'be', 'been', 'being',
+  'do', 'does', 'did', 'have', 'has', 'had', 'will', 'would', 'shall', 'should',
+  'can', 'could', 'may', 'might', 'must',
+  // 介词
+  'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'about', 'into', 'through', 'during', 'before', 'after', 'above', 'below', 'between', 'under', 'over',
+  // 代词
+  'i', 'you', 'he', 'she', 'it', 'we', 'they', 'me', 'him', 'her', 'us', 'them', 'my', 'your', 'his', 'its', 'our', 'their', 'mine', 'yours', 'hers', 'ours', 'theirs',
+  // 限定词/冠词
+  'a', 'an', 'the', 'this', 'that', 'these', 'those', 'some', 'any', 'no', 'all', 'both', 'each', 'few', 'many', 'much',
+  // 连接词
+  'and', 'but', 'or', 'nor', 'so', 'yet', 'although', 'because', 'since', 'unless', 'while', 'if', 'when', 'where', 'why', 'how',
+  // 其他功能词
+  'there', 'here', 'what', 'which', 'who', 'whom', 'whose', 'than', 'as', 'such', 'very', 'just', 'only', 'also', 'even', 'well', 'back', 'then', 'now', 'way'
+]);
+
+// 提取查询术语 - 智能识别核心限定条件
+function extractQueryTerms(query) {
+  const terms = [];
+  const lowerQuery = query.toLowerCase();
+  
+  // 1. 先匹配预定义的法律术语短语（最高优先级）
+  const multiWordPatterns = Object.keys(LEGAL_TERM_WEIGHTS)
+    .filter(k => k.includes(' '))
+    .sort((a, b) => b.length - a.length);
+  
+  for (const pattern of multiWordPatterns) {
+    if (lowerQuery.includes(pattern)) {
+      terms.push({ term: pattern, weight: LEGAL_TERM_WEIGHTS[pattern], isMultiWord: true, isCore: true });
+    }
+  }
+  
+  // 2. 识别名词短语作为核心限定条件
+  // 模式：形容词/名词 + 名词（排除功能词）
+  const nounPhrasePattern = /\b([a-z]{3,})\s+([a-z]{3,})\b/g;
+  let match;
+  const foundPhrases = [];
+  
+  while ((match = nounPhrasePattern.exec(lowerQuery)) !== null) {
+    const word1 = match[1];
+    const word2 = match[2];
+    
+    // 如果两个词都不是功能词，且组合在一起有意义，则视为核心短语
+    if (!FUNCTION_WORDS.has(word1) && !FUNCTION_WORDS.has(word2)) {
+      const phrase = `${word1} ${word2}`;
+      // 检查是否已经在预定义术语中
+      if (!terms.find(t => t.term === phrase) && !LEGAL_TERM_WEIGHTS[phrase]) {
+        // 检查是否已被预定义术语覆盖（如 disciplinary powers）
+        const coveredByExisting = terms.some(t => t.isMultiWord && (t.term.includes(word1) || t.term.includes(word2)));
+        if (!coveredByExisting) {
+          foundPhrases.push(phrase);
+        }
+      }
+    }
+  }
+  
+  // 为识别出的名词短语添加权重
+  for (const phrase of foundPhrases) {
+    const words = phrase.split(' ');
+    // 名词短语权重 = 两个词的基础权重之和 × 1.5（短语比单词更重要）
+    const weight = (calculateTermWeight(words[0], false) + calculateTermWeight(words[1], false)) * 1.5;
+    terms.push({ term: phrase, weight: weight, isMultiWord: true, isCore: true });
+  }
+  
+  // 3. 提取剩余的独立核心词（排除功能词和已匹配的短语）
+  // 先移除已匹配的多词短语
+  let remainingQuery = lowerQuery;
+  for (const term of terms.filter(t => t.isMultiWord)) {
+    const escaped = term.term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    remainingQuery = remainingQuery.replace(new RegExp(`\\b${escaped}\\b`, 'g'), ' ');
+  }
+  
+  // 拆分并过滤功能词
+  const remainingWords = remainingQuery
+    .split(/\s+/)
+    .filter(w => w.length > 2 && !/^[0-9]+$/.test(w) && !FUNCTION_WORDS.has(w));
+  
+  for (const word of remainingWords) {
+    if (!terms.find(t => t.term === word)) {
+      const weight = calculateTermWeight(word, false);
+      // 独立的核心实词权重稍高
+      terms.push({ term: word, weight: weight * 1.2, isMultiWord: false, isCore: true });
+    }
+  }
+  
+  console.log(`🎯 核心限定条件：${terms.filter(t => t.isCore).map(t => t.term).join(' + ')}`);
+  
+  return terms;
+}
+
+// 计算分块与查询的加权相似度
+function calculateChunkSimilarity(chunk, queryTerms) {
+  const chunkLower = chunk.content.toLowerCase();
+  let totalScore = 0;
+  const matchedTerms = [];
+  
+  for (const qt of queryTerms) {
+    const occurrences = (chunkLower.match(new RegExp(qt.term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+    if (occurrences > 0) {
+      // 权重 = 术语权重 × 出现次数 × 位置因子（标题/开头位置更重要）
+      const positionFactor = chunkLower.indexOf(qt.term) < 100 ? 1.3 : 1.0;
+      const termScore = qt.weight * occurrences * positionFactor;
+      totalScore += termScore;
+      matchedTerms.push({ term: qt.term, occurrences, score: termScore });
+    }
+  }
+  
+  // 结构标记加分
+  if (chunk.structureMarker) {
+    totalScore *= 1.2; // 有结构标记的分块更可靠
+  }
+  
+  return {
+    score: totalScore,
+    matchedTerms,
+    chunk: chunk
+  };
+}
+
+// 文档级过滤和聚合
+function aggregateByDocument(chunkResults) {
+  const docMap = new Map();
+  
+  for (const result of chunkResults) {
+    const docId = result.chunk.docId;
+    if (!docMap.has(docId)) {
+      docMap.set(docId, {
+        docId: docId,
+        docName: result.chunk.docName,
+        totalScore: 0,
+        chunks: [],
+        matchedTerms: new Map()
+      });
+    }
+    
+    const docResult = docMap.get(docId);
+    docResult.totalScore += result.score;
+    docResult.chunks.push(result.chunk);
+    
+    // 合并匹配术语
+    for (const mt of result.matchedTerms) {
+      if (!docResult.matchedTerms.has(mt.term)) {
+        docResult.matchedTerms.set(mt.term, 0);
+      }
+      docResult.matchedTerms.set(mt.term, docResult.matchedTerms.get(mt.term) + mt.occurrences);
+    }
+  }
+  
+  // 转换为数组并排序
+  return Array.from(docMap.values())
+    .sort((a, b) => b.totalScore - a.totalScore);
+}
+
+// ==================== 增强版聊天 API ====================
+
+app.post('/api/chat', (req, res) => {
+  try {
+    const { message, category, docFilter } = req.body;
+    
+    if (!message) {
+      return res.status(400).json({
+        success: false,
+        error: '请输入问题'
+      });
+    }
+    
+    const db = readDB();
+    if (!db || !db.files) {
+      return res.json({
+        success: true,
+        answer: '还没有上传任何 PDF 文件，请先上传文件后再提问。',
+        sources: []
+      });
+    }
+    
+    // 根据分类筛选文件
+    let relevantFiles = db.files.filter(f => 
+      f.status !== 'deleted' && 
+      f.content && 
+      f.content.length > 0 &&
+      (!category || f.category === category)
+    );
+    
+    // 文档级过滤（如果指定了 docFilter）
+    if (docFilter && docFilter.length > 0) {
+      relevantFiles = relevantFiles.filter(f => 
+        docFilter.some(df => f.id === df || f.originalName.toLowerCase().includes(df.toLowerCase()))
+      );
+    }
+    
+    if (relevantFiles.length === 0) {
+      const catMsg = category ? `【${category}】分类下` : '';
+      const docMsg = docFilter ? `（文档过滤：${docFilter.join(', ')}）` : '';
+      return res.json({
+        success: true,
+        answer: `${catMsg}没有找到匹配的 PDF 文件${docMsg}。请检查过滤条件。`,
+        sources: [],
+        category: category
+      });
+    }
+    
+    // 提取查询术语（带权重）
+    const queryTerms = extractQueryTerms(message);
+    console.log(`🔍 查询术语：${queryTerms.map(t => `${t.term}(${t.weight})`).join(', ')}`);
+    
+    // 对所有文件进行智能分块
+    const allChunks = [];
+    for (const file of relevantFiles) {
+      const chunks = smartChunk(file.content, file.id, file.originalName);
+      allChunks.push(...chunks);
+    }
+    
+    console.log(`📦 生成 ${allChunks.length} 个文本块`);
+    
+    // 计算每个分块的相似度
+    const chunkResults = allChunks
+      .map(chunk => calculateChunkSimilarity(chunk, queryTerms))
+      .filter(r => r.score > 0)
+      .sort((a, b) => b.score - a.score);
+    
+    if (chunkResults.length === 0) {
+      return res.json({
+        success: true,
+        answer: `抱歉，在${category ? '【' + category + '】' : ''}PDF 文件中没有找到与"${message}"相关的内容。请尝试其他关键词。`,
+        sources: [],
+        category: category,
+        debug: {
+          queryTerms: queryTerms.map(t => t.term)
+        }
+      });
+    }
+    
+    // 按文档聚合结果
+    const docResults = aggregateByDocument(chunkResults.slice(0, 20));
+    
+    console.log(`📊 匹配到 ${docResults.length} 个文档`);
+    
+    // 构建回答 - 优先展示高权重术语匹配内容
+    const topDocs = docResults.slice(0, 5);
+    const answerParts = [];
+    const sources = [];
+    
+    // 按权重排序查询术语，突出高权重术语
+    const sortedQueryTerms = [...queryTerms].sort((a, b) => b.weight - a.weight);
+    const highWeightTerms = sortedQueryTerms.filter(t => t.weight >= 3.0);
+    const mediumWeightTerms = sortedQueryTerms.filter(t => t.weight >= 1.5 && t.weight < 3.0);
+    
+    answerParts.push(`根据${category ? '【' + category + '】' : ''}PDF 文件的内容，找到以下相关信息：\n\n`);
+    
+    // 如果有高权重术语，先总结高权重匹配
+    if (highWeightTerms.length > 0) {
+      answerParts.push(`🎯 **核心匹配** (高权重术语): ${highWeightTerms.map(t => `${t.term}(权重${t.weight.toFixed(1)})`).join(', ')}\n\n`);
+    }
+    
+    for (const docResult of topDocs) {
+      const file = relevantFiles.find(f => f.id === docResult.docId);
+      if (!file) continue;
+      
+      // 分离高权重和低权重匹配术语
+      const docMatchedTerms = Array.from(docResult.matchedTerms.entries());
+      const highWeightMatches = docMatchedTerms
+        .filter(([term]) => highWeightTerms.some(hwt => hwt.term === term))
+        .map(([term, count]) => `**${term}×${count}**`)
+        .join(', ');
+      
+      const otherMatches = docMatchedTerms
+        .filter(([term]) => !highWeightTerms.some(hwt => hwt.term === term))
+        .map(([term, count]) => `${term}×${count}`)
+        .join(', ');
+      
+      const matchedTermsStr = [highWeightMatches, otherMatches].filter(s => s).join(', ');
+      
+      answerParts.push(`📄 **${docResult.docName}** (${file.category}) - 匹配分：**${docResult.totalScore.toFixed(2)}**\n`);
+      answerParts.push(`   匹配术语：${matchedTermsStr}\n`);
+      
+      // 显示最相关的 2-3 个分块 - 优先展示包含高权重术语的分块
+      const docChunks = chunkResults.filter(r => r.chunk.docId === docResult.docId);
+      
+      // 找出包含高权重术语的分块
+      const highWeightChunks = docChunks.filter(r => 
+        r.matchedTerms.some(mt => highWeightTerms.some(hwt => hwt.term === mt.term))
+      );
+      
+      // 优先展示高权重分块，其次是普通分块
+      const topChunks = highWeightChunks.length > 0 
+        ? highWeightChunks.slice(0, 3)
+        : docChunks.slice(0, 3);
+      
+      for (const chunkResult of topChunks) {
+        const chunk = chunkResult.chunk;
+        const snippet = chunk.content.substring(0, 300) + (chunk.content.length > 300 ? '...' : '');
+        const marker = chunk.structureMarker ? `[${chunk.structureMarker}]` : '';
+        
+        // 如果分块包含高权重术语，添加标记
+        const hasHighWeight = highWeightTerms.some(hwt => 
+          chunk.content.toLowerCase().includes(hwt.term.toLowerCase())
+        );
+        const highlight = hasHighWeight ? '⭐ ' : '';
+        
+        answerParts.push(`   ${highlight}${marker}"…${snippet}…"\n\n`);
+      }
+      
+      sources.push({
+        docId: docResult.docId,
+        fileName: docResult.docName,
+        category: file.category,
+        score: docResult.totalScore,
+        matchedTerms: Object.fromEntries(docResult.matchedTerms),
+        chunkCount: docResult.chunks.length,
+        highWeightMatches: highWeightMatches
+      });
+    }
+    
+    res.json({
+      success: true,
+      answer: answerParts.join(''),
+      sources: sources,
+      category: category,
+      totalMatches: docResults.length,
+      debug: {
+        queryTerms: queryTerms.map(t => ({ term: t.term, weight: t.weight })),
+        totalChunks: allChunks.length,
+        matchedChunks: chunkResults.length
+      }
+    });
+    
+  } catch (error) {
+    console.error('聊天错误:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || '服务器内部错误'
+    });
+  }
+});
+
+// 启动服务器
+app.listen(PORT, '0.0.0.0', () => {
+  console.log('==========================================');
+  console.log('🚀 ClawText PDF Upload Server 正在运行');
+  console.log(`📡 地址：http://localhost:${PORT}`);
+  console.log(`📂 数据库：${DB_PATH}`);
+  console.log('==========================================');
+  console.log('✨ 增强功能：');
+  console.log('  • 术语权重检索 - 法律核心术语加权匹配');
+  console.log('  • 智能分块 - 保留法律文本结构（§、Section 等）');
+  console.log('  • 文档级过滤 - 支持按文档 ID/名称筛选');
+  console.log('==========================================');
+  console.log('API 端点:');
+  console.log('  GET  /api/hello          - 获取服务信息');
+  console.log('  POST /api/upload-pdf     - 上传 PDF 文件（自动分块）');
+  console.log('  GET  /api/pdf-files      - 获取所有 PDF 文件列表');
+  console.log('  GET  /api/documents      - 获取文档列表（精简版）');
+  console.log('  DELETE /api/pdf-files/:id - 删除 PDF 文件');
+  console.log('  POST /api/chat           - 智能问答（加权检索 + 文档过滤）');
+  console.log('  POST /api/extract-all-content - 重新提取内容（带分块）');
+  console.log('==========================================');
+});
+
+module.exports = app;

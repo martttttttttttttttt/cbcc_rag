@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>已上传的PDF文件列表</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f5f5f5;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+        }
+        
+        .header {
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 24px;
+            font-weight: 600;
+        }
+        
+        .back-btn {
+            margin-top: 10px;
+            padding: 8px 16px;
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 20px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-decoration: none;
+            display: inline-block;
+        }
+        
+        .back-btn:hover {
+            background: rgba(255, 255, 255, 0.3);
+            transform: translateY(-1px);
+        }
+        
+        .pdf-list {
+            padding: 20px;
+        }
+        
+        .pdf-item {
+            padding: 16px;
+            border: 1px solid #e0e0e0;
+            border-radius: 12px;
+            margin-bottom: 12px;
+            background: #fafafa;
+            transition: transform 0.2s ease;
+        }
+        
+        .pdf-item:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+        
+        .pdf-item h3 {
+            color: #333;
+            margin-bottom: 8px;
+            font-size: 16px;
+        }
+        
+        .pdf-info {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            font-size: 14px;
+            color: #666;
+        }
+        
+        .info-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+        
+        .error {
+            text-align: center;
+            padding: 40px;
+            color: #d32f2f;
+        }
+        
+        .no-files {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📁 已上传的PDF文件列表</h1>
+            <a href="/" class="back-btn">↩ 返回聊天界面</a>
+        </div>
+        <div class="pdf-list" id="pdfList">
+            <div class="loading">正在加载PDF文件列表...</div>
+        </div>
+    </div>
+
+    <script>
+        async function loadPDFList() {
+            const pdfListElement = document.getElementById('pdfList');
+            
+            try {
+                const response = await fetch('http://localhost:3000/api/pdf-files');
+                const result = await response.json();
+                
+                if (result.success && result.files && result.files.length > 0) {
+                    let html = '';
+                    result.files.forEach(file => {
+                        const uploadTime = new Date(file.uploadTime).toLocaleString('zh-CN');
+                        const fileSize = (file.fileSize / 1024).toFixed(2) + ' KB';
+                        
+                        html += `
+                            <div class="pdf-item">
+                                <h3>📄 ${file.originalName}</h3>
+                                <div class="pdf-info">
+                                    <div class="info-item">
+                                        <strong>ID:</strong> ${file.id}
+                                    </div>
+                                    <div class="info-item">
+                                        <strong>大小:</strong> ${fileSize}
+                                    </div>
+                                    <div class="info-item">
+                                        <strong>上传时间:</strong> ${uploadTime}
+                                    </div>
+                                    <div class="info-item">
+                                        <strong>状态:</strong> ${file.status}
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                    });
+                    pdfListElement.innerHTML = html;
+                } else {
+                    pdfListElement.innerHTML = '<div class="no-files">暂无上传的PDF文件</div>';
+                }
+            } catch (error) {
+                console.error('Error loading PDF list:', error);
+                pdfListElement.innerHTML = `<div class="error">❌ 加载PDF列表失败: ${error.message}</div>`;
+            }
+        }
+        
+        // 页面加载完成后立即加载PDF列表
+        document.addEventListener('DOMContentLoaded', loadPDFList);
+    </script>
+</body>
+</html>

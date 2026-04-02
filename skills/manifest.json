@@ -1,0 +1,167 @@
+{
+  "name": "ClawTextPDFAnalysis",
+  "version": "1.0.0",
+  "description": "PDF文档分析与AI智能问答技能包",
+  "author": "ClawText Team",
+  "skills": [
+    {
+      "name": "PDFManagement",
+      "description": "PDF文件上传、管理与操作",
+      "entry": "pdf-management.js",
+      "parameters": {
+        "upload": {
+          "type": "object",
+          "properties": {
+            "files": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "description": "文件路径"
+              }
+            },
+            "category": {
+              "type": "string",
+              "enum": ["MMT", "SFAT"],
+              "description": "文档分类"
+            }
+          },
+          "required": ["files"]
+        },
+        "list": {
+          "type": "object",
+          "properties": {
+            "category": {
+              "type": "string",
+              "enum": ["MMT", "SFAT"],
+              "description": "文档分类"
+            }
+          }
+        },
+        "delete": {
+          "type": "object",
+          "properties": {
+            "fileId": {
+              "type": "string",
+              "description": "文件ID"
+            }
+          },
+          "required": ["fileId"]
+        }
+      }
+    },
+    {
+      "name": "OCRExtraction",
+      "description": "PDF文本提取与OCR处理",
+      "entry": "ocr-extraction.js",
+      "parameters": {
+        "extract": {
+          "type": "object",
+          "properties": {
+            "filePath": {
+              "type": "string",
+              "description": "PDF文件路径"
+            }
+          },
+          "required": ["filePath"]
+        }
+      }
+    },
+    {
+      "name": "DocumentAnalysis",
+      "description": "文档智能分析与分块",
+      "entry": "document-analysis.js",
+      "parameters": {
+        "analyze": {
+          "type": "object",
+          "properties": {
+            "content": {
+              "type": "string",
+              "description": "文档内容"
+            },
+            "docId": {
+              "type": "string",
+              "description": "文档ID"
+            },
+            "docName": {
+              "type": "string",
+              "description": "文档名称"
+            }
+          },
+          "required": ["content", "docId"]
+        }
+      }
+    },
+    {
+      "name": "AIQnA",
+      "description": "基于AI的文档问答",
+      "entry": "ai-qna.js",
+      "parameters": {
+        "ask": {
+          "type": "object",
+          "properties": {
+            "question": {
+              "type": "string",
+              "description": "用户问题"
+            },
+            "category": {
+              "type": "string",
+              "enum": ["MMT", "SFAT"],
+              "description": "文档分类"
+            },
+            "docFilter": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "文档过滤"
+            }
+          },
+          "required": ["question"]
+        }
+      }
+    },
+    {
+      "name": "VectorSearch",
+      "description": "向量语义搜索",
+      "entry": "vector-search.js",
+      "parameters": {
+        "search": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "搜索查询"
+            },
+            "topK": {
+              "type": "integer",
+              "default": 5,
+              "description": "返回结果数量"
+            }
+          },
+          "required": ["query"]
+        }
+      }
+    },
+    {
+      "name": "LegalAnalysis",
+      "description": "法律文档专业分析",
+      "entry": "legal-analysis.js",
+      "parameters": {
+        "analyzeCourtComments": {
+          "type": "object",
+          "properties": {
+            "content": {
+              "type": "string",
+              "description": "文档内容"
+            },
+            "docName": {
+              "type": "string",
+              "description": "文档名称"
+            }
+          },
+          "required": ["content"]
+        }
+      }
+    }
+  ]
+}

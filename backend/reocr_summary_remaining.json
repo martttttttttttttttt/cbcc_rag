@@ -1,0 +1,37 @@
+{
+  "processedAt": "2026-03-04T16:53:08.603Z",
+  "total": 6,
+  "success": 6,
+  "results": [
+    {
+      "docId": "1772529055475-adhcfot8e",
+      "fileName": "SFAT-2021-4-Ruling on Prelimin.pdf",
+      "chars": 100000
+    },
+    {
+      "docId": "1772529055436-2cetv45fk",
+      "fileName": "SFAT-2021-4-Descion on Costs.pdf",
+      "chars": 3133
+    },
+    {
+      "docId": "1772529055416-ay6imjh0d",
+      "fileName": "SFAT5-2020-Determination28-9-2020).pdf",
+      "chars": 11285
+    },
+    {
+      "docId": "1772529055397-gr7qoic1u",
+      "fileName": "SFAT4-2020-Decision6-7-2020_final.pdf",
+      "chars": 5305
+    },
+    {
+      "docId": "1772524457959-x01o00qew",
+      "fileName": "MMT_China_Forestry_Directions(2.8.2024)_e.pdf",
+      "chars": 142
+    },
+    {
+      "docId": "1772524457921-osao3k55d",
+      "fileName": "CIFC_and_Smartac_Ruling_and_Directions_28.1.2025.pdf",
+      "chars": 17959
+    }
+  ]
+}

@@ -1,0 +1,59 @@
+{
+  "legal_terms": [
+    {
+      "term": "SFAT",
+      "full_form": "Securities and Futures Appeals Tribunal",
+      "description": "香港证券及期货事务上诉审裁处，负责处理对证监会决定的上诉"
+    },
+    {
+      "term": "SFC",
+      "full_form": "Securities and Futures Commission",
+      "description": "香港证券及期货事务监察委员会，负责监管香港的证券和期货市场"
+    },
+    {
+      "term": "MMT",
+      "full_form": "Market Misconduct Tribunal",
+      "description": "市场失当行为审裁处，负责处理市场失当行为的调查和裁定"
+    },
+    {
+      "term": "fit and proper",
+      "description": "适合性原则，用于评估持牌人士是否适合继续持有牌照"
+    },
+    {
+      "term": "disciplinary powers",
+      "description": "纪律处分权力，指监管机构对违规人士采取纪律行动的权力"
+    },
+    {
+      "term": "section 194",
+      "description": "香港《证券及期货条例》第194条，关于证监会的纪律处分权力"
+    },
+    {
+      "term": "determination",
+      "description": "裁定，指审裁处对案件的最终决定"
+    },
+    {
+      "term": "ruling",
+      "description": "裁决，指审裁处对程序或法律问题的决定"
+    },
+    {
+      "term": "interlocutory",
+      "description": "中间的，指诉讼过程中的程序性决定，而非最终裁定"
+    },
+    {
+      "term": "sanction",
+      "description": "制裁，指对违规行为采取的处罚措施"
+    },
+    {
+      "term": "misconduct",
+      "description": "不当行为，指违反监管规定的行为"
+    },
+    {
+      "term": "transparency",
+      "description": "透明度，指监管过程和决定的公开程度"
+    },
+    {
+      "term": "clarity",
+      "description": "清晰度，指监管决定和理由的明确程度"
+    }
+  ]
+}

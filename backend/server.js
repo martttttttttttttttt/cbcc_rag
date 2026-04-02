@@ -657,8 +657,8 @@ In summary, the court has strongly emphasized the need for transparency, precisi
       {
         model: 'qwen3.5-plus',
         messages: messages,
-        temperature: 0.1,
-        max_tokens: 2000,
+        temperature: 0.3,
+        max_tokens: 4096,
         top_p: 0.9,
         frequency_penalty: 0.1
       },
@@ -667,7 +667,7 @@ In summary, the court has strongly emphasized the need for transparency, precisi
           'Authorization': `Bearer ${apiKey}`,
           'Content-Type': 'application/json'
         },
-        timeout: 120000
+        timeout: 180000
       }
     );
     
@@ -985,13 +985,12 @@ app.post('/api/chat', async (req, res) => {
     });
     
     // 选取最相关的 Top 5 文档（避免上下文过大导致超时）
-    const topFiles = scoredFiles.slice(0, 5).filter(f => f.score > 0);
+    const topFiles = scoredFiles.slice(0, 10).filter(f => f.score > 0);
     
     let selectedFiles;
     if (topFiles.length === 0) {
-      // 如果没有找到相关文档，使用所有文档（最多 5 个）
-      console.log('⚠️ 未找到关键词匹配的文档，使用所有候选文件（最多 5 个）');
-      selectedFiles = relevantFiles.slice(0, 5);
+      console.log('⚠️ 未找到关键词匹配的文档，使用所有候选文件（最多 10 个）');
+      selectedFiles = relevantFiles.slice(0, 10);
     } else {
       selectedFiles = topFiles.map(f => f.file);
       console.log(`✅ 选取 Top ${selectedFiles.length} 个最相关文档`);
@@ -1002,7 +1001,7 @@ app.post('/api/chat', async (req, res) => {
     const contextParts = [];
     
     // 每个文档最多 8000 字符（平衡上下文大小和内容完整性）
-    const maxCharsPerDoc = 8000;
+    const maxCharsPerDoc = 25000;
     
     for (const file of selectedFiles) {
       // 传递完整文档内容（不超过限制）

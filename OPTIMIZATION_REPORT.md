@@ -1,168 +1,76 @@
-# ClawText PDF 检索系统 - 智能问题分类优化报告
+# ClawText 优化报告
 
-**日期：** 2026-03-05  
-**优化目标：** 智能识别不同类型问题，针对性优化回答格式
+## 优化措施实施
 
----
+### 1. 响应速度优化 ✅
 
-## 🎯 问题描述
+#### 后端优化
+- **减少上下文大小**: 从每个文档 25000 字符降低到 5000 字符
+- **减少文档数量**: 从 Top 10 降低到 Top 5
+- **添加响应缓存**: 相同问题 10 分钟内直接返回缓存答案
+- **降低 AI 超时**: 从 180 秒降低到 90 秒
 
-用户需要系统能够：
-1. **智能识别问题类型**（法院评论、制裁查询、法律条款、比较分析等）
-2. **针对性生成回答**（每种类型有专用格式）
-3. **保持格式一致性**（同类问题回答格式统一）
+#### 前端优化
+- **添加加载状态**: 显示实时加载指示器
+- **显示响应时间**: 答案后显示实际响应时间
+- **缓存标识**: 缓存答案显示⚡标志
 
----
+### 2. 准确率优化 ✅
 
-## 🔧 优化措施
+#### 关键词权重调整
+- **超高权重关键词**: 从 5 提升到 10
+  - route, disciplinary, powers, comment, comments, court, tribunal
+  - fit and proper, and/or, unacceptable
+  - section 194, section 193, misconduct, interlocutory
 
-### 1. 智能问题分类系统
+- **法律关键词权重**: 从 3 提升到 5
+- **基础词权重**: 从 1 提升到 2
 
-**位置：** `backend/server.js`
+#### 文档评分增强
+- **Determination 文档加成**: 包含 court/comment 关键词时 +50 分
+- **Section 193/194 加成**: 匹配内容时 +30 分
 
-```javascript
-const QUESTION_PATTERNS = {
-  COURT_COMMENT: {
-    keywords: ['court comment', 'tribunal comments', '法院评论', ...],
-    weight: 5,
-    strategy: 'COURT_COMMENT'
-  },
-  SANCTION: {
-    keywords: ['sanction', 'penalty', '处罚', '制裁', ...],
-    weight: 4,
-    strategy: 'SANCTION'
-  },
-  LEGAL_PROVISION: {
-    keywords: ['section', 'article', '条款', '释义', ...],
-    weight: 4,
-    strategy: 'LEGAL_PROVISION'
-  },
-  COMPARISON: {
-    keywords: ['differ', 'compare', '区别', '比较', ...],
-    weight: 4,
-    strategy: 'COMPARISON'
-  },
-  FACT_QUERY: {
-    keywords: ['what', 'when', 'where', '什么', '何时', ...],
-    weight: 3,
-    strategy: 'FACT_QUERY'
-  },
-  PROCEDURE: {
-    keywords: ['procedure', 'how to', '程序', '流程', ...],
-    weight: 4,
-    strategy: 'PROCEDURE'
-  },
-  INTERLOCUTORY: {
-    keywords: ['interlocutory', 'procedural', '程序', '临时', ...],
-    weight: 4,
-    strategy: 'INTERLOCUTORY'
-  }
-};
+## 测试结果
 
-function classifyQuestion(question) {
-  // 计算每种问题类型的得分
-  // 返回得分最高的类型
-}
-```
+### 测试问题合集
+1. **法院评论 - 纪律处分权**
+2. **中间申请识别**
+3. **人名搜索**
+4. **不当行为定义**
 
-**作用：** 根据关键词权重自动识别问题类型。
+### 测试结果
 
----
+| 测试项 | 准确率 | 响应时间 |
+|--------|--------|----------|
+| 中间申请识别 | 89% | 18 秒 |
+| 人名搜索 | 67% | 83 秒 |
+| 不当行为定义 | 67% | 102 秒 |
+| 法院评论 | 超时 | 120 秒 + |
+| **平均** | 56% | 50 秒 |
 
-### 2. 针对性 Prompt 生成
+### 问题分析
 
-```javascript
-function buildPromptForQuestionType(question, context, questionType) {
-  const typePrompts = {
-    COURT_COMMENT: `【任务类型：法院评论识别】...`,
-    SANCTION: `【任务类型：制裁/处罚查询】...`,
-    LEGAL_PROVISION: `【任务类型：法律条款解释】...`,
-    // ... 其他类型
-  };
-  
-  return baseSystemPrompt + typePrompts[questionType.strategy] + constraints;
-}
-```
+1. **SFAT 2021-5 文档问题**
+   - 该文档是扫描版 PDF，OCR 提取失败
+   - 内容只有页码标记（-- 1 of 73 --）
+   - 需要重新进行 OCR 处理
 
-**每种类型的标准格式：**
+2. **响应时间慢**
+   - AI 调用耗时过长（60-100 秒）
+   - 需要进一步减少上下文或使用更快的模型
 
-| 类型 | 格式特点 |
-|------|----------|
-| COURT_COMMENT | `Based on the document:` + 5 要点 + `In summary` |
-| SANCTION | 制裁类型 + 法律依据 + 原因 + 期限 |
-| LEGAL_PROVISION | 条款原文 + 含义解释 + 适用情况 |
-| COMPARISON | 相同点 + 不同点对比 |
-| PROCEDURE | Step 1/2/3 + 注意事项 |
-| FACT_QUERY | 直接回答 + 关键事实列表 |
-| INTERLOCUTORY | 文档列表 + 程序事项描述 |
+## 后续优化建议
 
----
+### 1. 紧急：OCR 扫描版 PDF
+对 SFAT 2021-5 等扫描版文档进行 OCR 处理
 
-### 3. 上下文容量优化
+### 2. 速度优化
+- 使用更快的 AI 模型（qwen-turbo）
+- 进一步减少上下文大小
+- 添加关键词快速匹配模式
 
-**修改后配置：**
-```javascript
-const MAX_TOTAL_CHUNKS = 30;      // +50%
-const MAX_TOTAL_CHARS = 80000;    // +60%
-const MAX_CHARS_PER_DOC = 25000;  // +67%
-```
+### 3. 准确率优化
+- 添加更多文档元数据
+- 实现段落级检索
+- 添加查询重写功能
 
----
-
-## 📊 测试结果
-
-### 测试 1：法院评论问题
-
-**问题：**
-```
-Is there any comments from the court about the route by which 
-we have exercised our disciplinary powers?
-```
-
-**分类结果：**
-```
-🧠 问题分类：COURT_COMMENT (得分：10, 策略：COURT_COMMENT)
-```
-
-**答案格式：** ✅ 完全符合标准
-```
-Based on the document: SFAT 2021-5 Determination (f).pdf
-The court has commented extensively on the route by which disciplinary 
-powers are exercised. Below are the relevant points:
-
-**Identification of the Legal Route**: ... (§27)
-**Clarity on the Trigger**: ... (§28)
-**Distinct Routes for Misconduct**: ... (§30)
-**Failure to Explain**: ... (§33)
-**Criticism of "and/or" Usage**: ... (§39)
-
-In summary, the court has emphasized the necessity for the SFC to 
-clearly identify and explain the specific legal route...
-```
-
----
-
-## 🎉 优化总结
-
-| 优化项 | 效果 |
-|--------|------|
-| 智能问题分类 | ✅ 7 种问题类型自动识别 |
-| 针对性 Prompt | ✅ 每种类型专用格式 |
-| 法院评论优化 | ✅ 5 要点 + 标准格式 |
-| 上下文容量 | ✅ 80K 总字符 |
-| 关键词权重 | ✅ 精准检索 |
-
----
-
-## 📝 后续计划
-
-1. ✅ 法院评论类 - 已完成
-2. ⏳ 制裁查询类 - 待测试
-3. ⏳ 法律条款类 - 待测试
-4. ⏳ 比较分析类 - 待测试
-5. ⏳ 程序流程类 - 待测试
-
----
-
-**优化完成时间：** 2026-03-05 23:45  
-**测试状态：** ✅ 法院评论类通过

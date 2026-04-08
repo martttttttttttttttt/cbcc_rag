@@ -84,6 +84,8 @@ export default {
       selectedDocFilter: '',
       documents: [],
       useAIEnhancement: true, // 默认启用 AI 增强
+      isLoading: false,       // 加载状态
+      loadingStartTime: 0,    // 加载开始时间
       STORAGE_KEY: 'clawtext_chat_history'
     }
   },
@@ -264,13 +266,13 @@ export default {
     
     async sendMessage() {
       if (this.inputMessage.trim() === '') return;
-      
+
       // 添加用户消息
       this.addUserMessage(this.inputMessage);
-      
+
       const userMessage = this.inputMessage;
       this.inputMessage = '';
-      
+
       // 检查是否是上传命令
       if (userMessage.toLowerCase().includes('上传') && userMessage.toLowerCase().includes('pdf')) {
         if (this.selectedFiles.length > 0) {
@@ -280,31 +282,33 @@ export default {
         }
         return;
       }
-      
+
       // 检查是否是要查看 PDF 列表
       if (userMessage.toLowerCase().includes('列表') || userMessage.toLowerCase().includes('查看 pdf')) {
         this.addBotMessage('点击上方的"📋 查看 PDF 列表"按钮可以查看所有已上传的 PDF 文件。');
         return;
       }
-      
+
       // 智能问答 - 调用后端 API
+      this.isLoading = true;
+      this.loadingStartTime = Date.now();
       this.addBotMessage('🤔 正在搜索 PDF 内容...');
-      
+
       try {
         const requestBody = {
           message: userMessage
         };
-        
+
         // 添加文档过滤
         if (this.selectedDocFilter && this.selectedDocFilter !== '') {
           requestBody.docFilter = [this.selectedDocFilter];
         }
-        
+
         // 构建 URL，如果启用 AI 增强则添加参数
-        const chatUrl = this.useAIEnhancement 
-          ? 'http://localhost:3000/api/chat?ai=true' 
+        const chatUrl = this.useAIEnhancement
+          ? 'http://localhost:3000/api/chat?ai=true'
           : 'http://localhost:3000/api/chat';
-        
+
         const response = await fetch(chatUrl, {
           method: 'POST',
           headers: {
@@ -312,60 +316,37 @@ export default {
           },
           body: JSON.stringify(requestBody)
         });
-        
+
         const result = await response.json();
-        
+
         // 移除"正在搜索"消息
         this.messages.pop();
-        
+
+        // 计算响应时间
+        const duration = Date.now() - this.loadingStartTime;
+        this.isLoading = false;
+
         if (result.success) {
-          // 显示 AI 增强标志
-          if (result.aiEnhanced) {
-            this.addBotMessage(`🤖 **AI 增强回答** (模型：${result.debug?.aiModel || 'qwen'})\n\n${result.answer}`);
+          // 如果是缓存命中的答案
+          if (result.cached) {
+            this.addBotMessage(`⚡ 缓存答案 (节省时间)\n\n${result.answer}`);
           } else {
-            this.addBotMessage(result.answer);
+            this.addBotMessage(`${result.answer}\n\n⏱️ 响应时间：${duration}ms`);
           }
           
-          // 显示调试信息（如果有）- 区分 AI 模式和普通模式
+          // 显示调试信息（如果有）
           if (result.debug) {
             let debugText = `\n🔍 **检索详情**:\n`;
-            
-            // AI 增强模式的调试信息
-            if (result.aiEnhanced) {
-              debugText += `   查询类型：${result.debug.queryType || 'N/A'}\n`;
-              debugText += `   搜索结果数：${result.debug.searchResultsCount || 0}\n`;
-              debugText += `   AI 模型：${result.debug.aiModel || 'qwen'}\n`;
-              
-              // 显示查询分析摘要
-              if (result.queryAnalysis) {
-                debugText += `\n💡 **查询理解**:\n`;
-                debugText += `   意图：${result.queryAnalysis.intent || 'N/A'}\n`;
-                if (result.queryAnalysis.ambiguities && result.queryAnalysis.ambiguities.length > 0) {
-                  debugText += `   歧义提示：${result.queryAnalysis.ambiguities.slice(0, 2).join('; ')}...\n`;
-                }
-              }
-            } 
-            // 普通模式的调试信息
-            else if (result.debug.queryTerms) {
-              debugText += `   查询术语：${result.debug.queryTerms.map(t => `${t.term}(权重${t.weight})`).join(', ')}\n`;
-              debugText += `   文本块总数：${result.debug.totalChunks}\n`;
-              debugText += `   匹配文本块：${result.debug.matchedChunks}\n`;
-            }
-            
-            debugText += `   匹配文档数：${result.totalMatches || 0}\n`;
+            debugText += `   文档评分：${result.debug.queryTerms ? result.debug.queryTerms.map(t => `${t.term}(权重${t.weight})`).join(', ') : 'N/A'}\n`;
+            debugText += `   匹配文档数：${result.totalDocuments || 0}\n`;
             this.addBotMessage(debugText);
           }
-          
-          // 显示来源信息（增强版）
+
+          // 显示来源信息
           if (result.sources && result.sources.length > 0) {
             let sourcesText = '\n📚 **来源文件**:\n';
             for (const src of result.sources) {
-              const matchedTermsStr = src.matchedTerms 
-                ? Object.entries(src.matchedTerms).map(([k, v]) => `${k}×${v}`).join(', ')
-                : 'N/A';
-              sourcesText += `   • ${src.fileName} 【${src.category}】\n`;
-              sourcesText += `     匹配分：${src.score?.toFixed(2) || 'N/A'} | 匹配块：${src.chunkCount || 0}\n`;
-              sourcesText += `     匹配术语：${matchedTermsStr}\n`;
+              sourcesText += `   • ${src.fileName} 【${src.category}】 - 相关性：${src.relevanceScore?.toFixed(0) || 'N/A'}\n`;
             }
             this.addBotMessage(sourcesText);
           }
@@ -375,6 +356,7 @@ export default {
       } catch (error) {
         // 移除"正在搜索"消息
         this.messages.pop();
+        this.isLoading = false;
         console.error('Chat error:', error);
         this.addBotMessage('❌ 无法连接到后端服务器，请确保后端正在运行。\n错误详情：' + error.message);
       }
